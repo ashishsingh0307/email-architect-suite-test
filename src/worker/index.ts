@@ -16,7 +16,7 @@ import {
   CreateTemplateSchema,
   ExportSequenceSchema,
   GenerateContentSchema
-} from "@/shared/types";
+} from "../shared/types";
 import OpenAI from "openai";
 import { v4 as uuidv4 } from "uuid";
 
