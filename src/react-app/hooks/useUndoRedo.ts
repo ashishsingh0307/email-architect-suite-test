@@ -1,83 +1,129 @@
-import { useState, useCallback, useRef } from 'react';
+// useUndoRedo.ts
+import { useCallback, useRef, useState } from "react";
 
-interface HistoryState<T> {
+export type HistoryState<T> = {
   past: T[];
   present: T;
   future: T[];
-}
+};
 
-export function useUndoRedo<T>(initialState: T) {
+export default function useUndoRedo<T>(initialState: T) {
   const [history, setHistory] = useState<HistoryState<T>>({
     past: [],
     present: initialState,
     future: [],
   });
 
+  const pointerRef = useRef<number>(history.past.length);
   const lastSavedState = useRef<T>(initialState);
 
+  // helpers
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
 
-  const undo = useCallback(() => {
-    setHistory((currentHistory) => {
-      if (currentHistory.past.length === 0) {
-        return currentHistory;
+  // internal: replace history with a new object (used rarely)
+  const replaceHistory = useCallback((next: HistoryState<T>) => {
+    pointerRef.current = next.past.length;
+    setHistory(next);
+  }, []);
+
+  // setState: push current present into past and set new present (clears future)
+  const setState = useCallback((newState: T | ((prev: T) => T)) => {
+    setHistory((current) => {
+      const resolved = typeof newState === "function" ? (newState as (prev: T) => T)(current.present) : newState;
+      // if identical, no-op
+      if (JSON.stringify(resolved) === JSON.stringify(current.present)) {
+        return current;
       }
+      console.debug('[useUndoRedo] setState -> push present into past, pastLen ->', current.past.length + 1);
+      const next: HistoryState<T> = {
+        past: [...current.past, current.present],
+        present: resolved,
+        future: [], // clear redo
+      };
+      pointerRef.current = next.past.length;
+      return next;
+    });
+  }, []);
 
-      const previous = currentHistory.past[currentHistory.past.length - 1];
-      const newPast = currentHistory.past.slice(0, currentHistory.past.length - 1);
+  // push arbitrary snapshot (same as setState but for direct snapshot)
+  const push = useCallback((snapshot: T) => {
+    setHistory((current) => {
+      if (JSON.stringify(snapshot) === JSON.stringify(current.present)) return current;
+      console.debug('[useUndoRedo] push -> pastLen:', current.past.length + 1);
+      const next: HistoryState<T> = {
+        past: [...current.past, current.present],
+        present: snapshot,
+        future: [],
+      };
+      pointerRef.current = next.past.length;
+      return next;
+    });
+  }, []);
 
-      return {
+  // replacePresent: replace the present WITHOUT pushing into past or clearing future
+  // Use this for parent/server-originated syncs where we want the source of truth applied,
+  // but we do not want to record another history entry.
+  const replacePresent = useCallback((newPresent: T) => {
+    setHistory((current) => {
+      // if identical, no-op
+      if (JSON.stringify(newPresent) === JSON.stringify(current.present)) return current;
+      const next: HistoryState<T> = {
+        past: current.past,
+        present: newPresent,
+        future: current.future,
+      };
+      pointerRef.current = next.past.length;
+      console.debug('[useUndoRedo] replacePresent -> present replaced without pushing. pastLen:', next.past.length, 'futureLen:', next.future.length);
+      return next;
+    });
+  }, []);
+
+  // doUndo -> returns the restored snapshot (or null)
+  const doUndo = useCallback((): T | null => {
+    let restored: T | null = null;
+    setHistory((current) => {
+      if (current.past.length === 0) return current;
+      const previous = current.past[current.past.length - 1];
+      const newPast = current.past.slice(0, current.past.length - 1);
+      const next: HistoryState<T> = {
         past: newPast,
         present: previous,
-        future: [currentHistory.present, ...currentHistory.future],
+        future: [current.present, ...current.future],
       };
+      restored = previous;
+      pointerRef.current = next.past.length;
+      console.debug('[useUndoRedo] doUndo -> pastLen:', next.past.length, 'futureLen:', next.future.length);
+      return next;
     });
+    return restored;
   }, []);
 
-  const redo = useCallback(() => {
-    setHistory((currentHistory) => {
-      if (currentHistory.future.length === 0) {
-        return currentHistory;
-      }
-
-      const next = currentHistory.future[0];
-      const newFuture = currentHistory.future.slice(1);
-
-      return {
-        past: [...currentHistory.past, currentHistory.present],
-        present: next,
+  const doRedo = useCallback((): T | null => {
+    let restored: T | null = null;
+    setHistory((current) => {
+      if (current.future.length === 0) return current;
+      const nextItem = current.future[0];
+      const newFuture = current.future.slice(1);
+      const next: HistoryState<T> = {
+        past: [...current.past, current.present],
+        present: nextItem,
         future: newFuture,
       };
+      restored = nextItem;
+      pointerRef.current = next.past.length;
+      console.debug('[useUndoRedo] doRedo -> pastLen:', next.past.length, 'futureLen:', next.future.length);
+      return next;
     });
-  }, []);
-
-  const setState = useCallback((newState: T | ((prev: T) => T)) => {
-    setHistory((currentHistory) => {
-      const resolvedState = typeof newState === 'function' 
-        ? (newState as (prev: T) => T)(currentHistory.present)
-        : newState;
-
-      // Don't add to history if state hasn't actually changed
-      if (JSON.stringify(resolvedState) === JSON.stringify(currentHistory.present)) {
-        return currentHistory;
-      }
-
-      return {
-        past: [...currentHistory.past, currentHistory.present],
-        present: resolvedState,
-        future: [], // Clear future when new action is taken
-      };
-    });
+    return restored;
   }, []);
 
   const reset = useCallback((newState: T) => {
-    setHistory({
-      past: [],
-      present: newState,
-      future: [],
-    });
+    const newHist: HistoryState<T> = { past: [], present: newState, future: [] };
+    pointerRef.current = 0;
+    setHistory(newHist);
     lastSavedState.current = newState;
+    console.debug('[useUndoRedo] reset -> present set, history cleared');
   }, []);
 
   const markAsSaved = useCallback(() => {
@@ -86,17 +132,28 @@ export function useUndoRedo<T>(initialState: T) {
 
   const hasUnsavedChanges = JSON.stringify(history.present) !== JSON.stringify(lastSavedState.current);
 
+  // Dev global inspector
+  if (process.env.NODE_ENV === 'development') {
+    try {
+      (window as any).__FLOW_UNDO_DEBUG = (window as any).__FLOW_UNDO_DEBUG || {};
+      (window as any).__FLOW_UNDO_DEBUG.getHistory = () => history;
+    } catch (e) {
+      // ignore
+    }
+  }
+
   return {
     state: history.present,
     setState,
-    undo,
-    redo,
+    push,
+    replacePresent,
+    doUndo,
+    doRedo,
     canUndo,
     canRedo,
     reset,
     markAsSaved,
     hasUnsavedChanges,
+    _debug: history,
   };
 }
-
-export default useUndoRedo;
