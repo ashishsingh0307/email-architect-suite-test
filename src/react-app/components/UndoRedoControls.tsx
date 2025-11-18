@@ -15,10 +15,19 @@ export default function UndoRedoControls({
   onRedo, 
   hasUnsavedChanges 
 }: UndoRedoControlsProps) {
+  const handleUndo = () => {
+    console.debug('[UndoRedoControls] undo clicked');
+    onUndo();
+  };
+
+  const handleRedo = () => {
+    console.debug('[UndoRedoControls] redo clicked');
+    onRedo();
+  };
   return (
     <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg shadow-sm p-2">
       <button
-        onClick={onUndo}
+        onClick={handleUndo}
         disabled={!canUndo}
         className={`p-2 rounded-lg transition-colors ${
           canUndo 
@@ -33,7 +42,7 @@ export default function UndoRedoControls({
       <div className="w-px h-6 bg-gray-300"></div>
       
       <button
-        onClick={onRedo}
+        onClick={handleRedo}
         disabled={!canRedo}
         className={`p-2 rounded-lg transition-colors ${
           canRedo 

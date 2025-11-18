@@ -1,14 +1,17 @@
+// FlowBuilder.tsx
 import { useCallback, useMemo, useEffect, useRef } from 'react';
 import ReactFlow, {
   Node,
   Edge,
   Connection,
-  useNodesState,
-  useEdgesState,
   Controls,
   Background,
   MiniMap,
   BackgroundVariant,
+  NodeChange,
+  EdgeChange,
+  useNodesState,
+  useEdgesState,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
@@ -17,6 +20,7 @@ import UndoRedoControls from './UndoRedoControls';
 import useUndoRedo from '@/react-app/hooks/useUndoRedo';
 import { EmailBlock, Connection as DBConnection, BLOCK_TYPE_CONFIG, CONDITION_TYPE_CONFIG } from '@/shared/types';
 
+// nodeTypes is stable and defined once (outside component) to avoid ReactFlow remount warnings
 const nodeTypes = {
   emailBlock: EmailBlockNode,
 };
@@ -47,148 +51,294 @@ export default function FlowBuilder({
   onCreateConnection,
   onDeleteConnection,
 }: FlowBuilderProps) {
-  // Initialize undo/redo state
+  // Initialize undo/redo state (single source of truth)
   const {
     state: flowState,
     setState: setFlowState,
-    undo,
-    redo,
+    replacePresent,
+    doUndo,
+    doRedo,
     canUndo,
     canRedo,
     reset,
-    hasUnsavedChanges
+    hasUnsavedChanges,
   } = useUndoRedo<FlowState>({
     blocks: blocks || [],
     connections: connections || [],
   });
 
-  // Track the previous block and connection count to detect when to reset history
+  // flag while we are applying history snapshots (prevent backend sync)
+  const isApplyingHistoryRef = useRef(false);
+
+  // additional guard: ignore parent->hook sync until this timestamp (ms since epoch)
+  const suppressParentSyncUntilRef = useRef<number>(0);
+
+  // previous counts to detect parent-originated changes
   const prevBlockCountRef = useRef<number>(0);
   const prevConnectionCountRef = useRef<number>(0);
   const initializedRef = useRef(false);
 
+  // --- pending-delete machinery so undo can cancel server deletes ---
+  const pendingDeletesRef = useRef<Record<string, number>>({});
+  const SCHEDULE_DELETE_MS = 3000; // 3s undo window
+
+  const scheduleDelete = useCallback((blockId: string) => {
+    if (pendingDeletesRef.current[blockId]) return; // already scheduled
+    const t = window.setTimeout(() => {
+      delete pendingDeletesRef.current[blockId];
+      // only call backend if not currently replaying undo/redo
+      if (!isApplyingHistoryRef.current) {
+        console.log('[FlowBuilder] executing scheduled backend delete', blockId);
+        onDeleteBlock(blockId);
+      } else {
+        console.log('[FlowBuilder] skipped scheduled backend delete (applying history)', blockId);
+      }
+    }, SCHEDULE_DELETE_MS);
+    pendingDeletesRef.current[blockId] = t as unknown as number;
+    console.log('[FlowBuilder] scheduled backend delete for', blockId, 'in', SCHEDULE_DELETE_MS, 'ms');
+  }, [onDeleteBlock]);
+
+  const cancelDelete = useCallback((blockId: string) => {
+    const t = pendingDeletesRef.current[blockId];
+    if (t) {
+      clearTimeout(t);
+      delete pendingDeletesRef.current[blockId];
+      console.log('[FlowBuilder] canceled pending delete for', blockId);
+    }
+  }, []);
+
+  // configurable suppression duration after undo/redo (ms)
+  const UNDO_REPLAY_SUPPRESSION_MS = 800;
+
+  // cleanup pending timers on unmount
   useEffect(() => {
+    return () => {
+      Object.values(pendingDeletesRef.current).forEach((tid) => clearTimeout(tid));
+      pendingDeletesRef.current = {};
+    };
+  }, []);
+
+  useEffect(() => {
+    const now = Date.now();
+
+    if (isApplyingHistoryRef.current || now < suppressParentSyncUntilRef.current) {
+      console.log('[FlowBuilder] skipping parent->hook sync (applying history or suppression window)', {
+        isApplyingHistory: isApplyingHistoryRef.current,
+        now,
+        suppressUntil: suppressParentSyncUntilRef.current,
+      });
+      return;
+    }
+
     const isInitialLoad = !initializedRef.current;
     const currentBlockCount = blocks?.length || 0;
     const currentConnectionCount = connections?.length || 0;
-    
-    // Only reset on initial load - after that, let setState handle updates
+
     if (isInitialLoad) {
       const newState = {
         blocks: blocks || [],
         connections: connections || [],
       };
+      console.log('[FlowBuilder] initial reset -> blocks:', newState.blocks.length, 'conns:', newState.connections.length);
       reset(newState);
       prevBlockCountRef.current = currentBlockCount;
       prevConnectionCountRef.current = currentConnectionCount;
       initializedRef.current = true;
-    } else {
-      // When blocks/connections change from parent (e.g., new block added via API or content edited),
-      // update the state through setState to preserve history
-      const blocksChanged = currentBlockCount !== prevBlockCountRef.current;
-      const connectionsChanged = currentConnectionCount !== prevConnectionCountRef.current;
-      
-      // Also check if block content changed (for edits that don't change count)
-      const blockContentChanged = !blocksChanged && blocks && flowState.blocks && 
-        JSON.stringify(blocks) !== JSON.stringify(flowState.blocks);
-      
-      if (blocksChanged || connectionsChanged || blockContentChanged) {
-        setFlowState({
-          blocks: blocks || [],
-          connections: connections || [],
-        });
-        prevBlockCountRef.current = currentBlockCount;
-        prevConnectionCountRef.current = currentConnectionCount;
-      }
+      return;
+    }
+
+    const blocksChanged = currentBlockCount !== prevBlockCountRef.current;
+    const connectionsChanged = currentConnectionCount !== prevConnectionCountRef.current;
+    const blockContentChanged =
+      !blocksChanged &&
+      blocks &&
+      flowState.blocks &&
+      JSON.stringify(blocks) !== JSON.stringify(flowState.blocks);
+
+    if (blocksChanged || connectionsChanged || blockContentChanged) {
+      console.log('[FlowBuilder] parent -> replacePresent (server truth)', { blocksChanged, connectionsChanged, blockContentChanged });
+      const replaceFn = typeof replacePresent === 'function' ? replacePresent : setFlowState;
+      replaceFn({ blocks: blocks || [], connections: connections || [] });
+      prevBlockCountRef.current = currentBlockCount;
+      prevConnectionCountRef.current = currentConnectionCount;
     }
   }, [blocks, connections, reset, setFlowState, flowState.blocks]);
 
-  // Use flow state for current blocks and connections
-  const currentBlocks = flowState.blocks;
-  const currentConnections = flowState.connections;
-  // Track if we're in the middle of applying undo/redo to prevent backend sync
-  const isApplyingHistoryRef = useRef(false);
 
-  // Handle block deletion with undo/redo
+  // Derived arrays for rendering (memoized)
+  const currentBlocks = useMemo(() => flowState.blocks || [], [flowState.blocks]);
+  const currentConnections = useMemo(() => flowState.connections || [], [flowState.connections]);
+
+  // Debug render summary
+  console.log('[FlowBuilder] render -> nodes:', currentBlocks.length, 'edges:', currentConnections.length);
+
+  // ------------------ Handlers (defined before nodes/edges to keep stable refs) ------------------
+
+  // Delete a block (updates hook and optionally calls backend)
   const handleDeleteBlock = useCallback((blockId: string) => {
-    setFlowState((prevState) => ({
-      blocks: prevState.blocks.filter(block => block.id !== blockId),
-      connections: prevState.connections.filter(conn => 
-        conn.source_block_id !== blockId && conn.target_block_id !== blockId
-      ),
-    }));
-    
-    // Only call backend API if not applying undo/redo
-    if (!isApplyingHistoryRef.current) {
-      onDeleteBlock(blockId);
-    }
-  }, [setFlowState, onDeleteBlock]);
+    // remove from UI immediately (this will push a history snapshot via hook setState)
+    setFlowState((prev) => {
+      const next = {
+        blocks: prev.blocks.filter((b) => b.id !== blockId),
+        connections: prev.connections.filter((c) => c.source_block_id !== blockId && c.target_block_id !== blockId),
+      };
+      console.log('[FlowBuilder] handleDeleteBlock -> optimistic setFlowState', { blockId, nextBlocks: next.blocks.length, nextConns: next.connections.length });
+      return next;
+    });
 
-  // Handle connection deletion with undo/redo
+    // schedule server delete (gives short window to undo)
+    scheduleDelete(blockId);
+  }, [setFlowState, scheduleDelete]);
+
+
+  // Delete a connection (updates hook and optionally calls backend)
   const handleDeleteConnection = useCallback((connectionId: string) => {
-    setFlowState((prevState) => ({
-      ...prevState,
-      connections: prevState.connections.filter(conn => conn.id !== connectionId),
-    }));
-    
-    // Only call backend API if not applying undo/redo
+    setFlowState((prev) => {
+      const next = { ...prev, connections: prev.connections.filter((c) => c.id !== connectionId) };
+      console.log('[FlowBuilder] handleDeleteConnection -> setFlowState', { connectionId, nextConns: next.connections.length });
+      return next;
+    });
+
     if (!isApplyingHistoryRef.current) {
+      console.log('[FlowBuilder] handleDeleteConnection -> calling onDeleteConnection', connectionId);
       onDeleteConnection(connectionId);
+    } else {
+      console.log('[FlowBuilder] handleDeleteConnection -> suppressed backend sync (applying history)');
     }
   }, [setFlowState, onDeleteConnection]);
 
-  // Override undo/redo to set the flag
+  // Apply Undo
   const handleUndo = useCallback(() => {
+    console.log('[FlowBuilder] handleUndo called');
     isApplyingHistoryRef.current = true;
-    undo();
+    suppressParentSyncUntilRef.current = Date.now() + UNDO_REPLAY_SUPPRESSION_MS;
+
+    const restored = doUndo();
+    console.log('[FlowBuilder] doUndo returned ->', !!restored);
+
+    // If restored snapshot contains blocks that had pending deletes, cancel them:
+    if (restored && Array.isArray(restored.blocks)) {
+      const restoredIds = new Set(restored.blocks.map(b => b.id));
+      Object.keys(pendingDeletesRef.current).forEach(pid => {
+        if (restoredIds.has(pid)) cancelDelete(pid);
+      });
+    }
+
     setTimeout(() => {
       isApplyingHistoryRef.current = false;
-    }, 0);
-  }, [undo]);
+      console.log('[FlowBuilder] undo suppression cleared');
+    }, UNDO_REPLAY_SUPPRESSION_MS + 20);
+  }, [doUndo, cancelDelete]);
 
+
+  // Apply Redo
   const handleRedo = useCallback(() => {
+    console.log('[FlowBuilder] handleRedo called');
     isApplyingHistoryRef.current = true;
-    redo();
+    suppressParentSyncUntilRef.current = Date.now() + UNDO_REPLAY_SUPPRESSION_MS;
+
+    const restored = doRedo();
+    console.log('[FlowBuilder] doRedo returned ->', !!restored);
+
+    if (restored && Array.isArray(restored.blocks)) {
+      const restoredIds = new Set(restored.blocks.map(b => b.id));
+      Object.keys(pendingDeletesRef.current).forEach(pid => {
+        if (restoredIds.has(pid)) cancelDelete(pid);
+      });
+    }
+
     setTimeout(() => {
       isApplyingHistoryRef.current = false;
-    }, 0);
-  }, [redo]);
+      console.log('[FlowBuilder] redo suppression cleared');
+    }, UNDO_REPLAY_SUPPRESSION_MS + 20);
+  }, [doRedo, cancelDelete]);
 
-  // Handle keyboard shortcuts
+
+  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key === 'z' && !event.shiftKey) {
         event.preventDefault();
-        if (canUndo) {
-          handleUndo();
-        }
+        if (canUndo) handleUndo();
       }
-      if (((event.ctrlKey || event.metaKey) && event.key === 'y') || 
-          ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'Z')) {
+      if (((event.ctrlKey || event.metaKey) && event.key === 'y') || ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'Z')) {
         event.preventDefault();
-        if (canRedo) {
-          handleRedo();
-        }
+        if (canRedo) handleRedo();
       }
     };
-
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [handleUndo, handleRedo, canUndo, canRedo]);
 
-  // Convert blocks to React Flow nodes
-  const nodes: Node[] = useMemo(() => 
+  // Node drag stop — update flowState and call backend (unless replaying history)
+  const onNodeDragStop = useCallback((_event: React.MouseEvent, node: Node) => {
+    const oldBlock = currentBlocks.find((b) => b.id === node.id);
+    const oldPos = oldBlock ? { x: oldBlock.position_x, y: oldBlock.position_y } : undefined;
+    const newPos = { x: Math.round(node.position.x), y: Math.round(node.position.y) };
+
+    console.log('[FlowBuilder] onNodeDragStop -> oldPos:', oldPos, 'newPos:', newPos);
+
+    setFlowState((prev) => {
+      const next = { ...prev, blocks: prev.blocks.map((b) => (b.id === node.id ? { ...b, position_x: newPos.x, position_y: newPos.y } : b)) };
+      return next;
+    });
+
+    if (!isApplyingHistoryRef.current) {
+      console.log('[FlowBuilder] onNodeDragStop -> calling onUpdateBlock', node.id, newPos);
+      onUpdateBlock(node.id, { position_x: newPos.x, position_y: newPos.y });
+    } else {
+      console.log('[FlowBuilder] onNodeDragStop -> suppressed backend sync (applying history)');
+    }
+  }, [setFlowState, onUpdateBlock, currentBlocks]);
+
+  // Connection creation (optimistic UI)
+  const onConnect = useCallback((params: Connection) => {
+    if (!params.source || !params.target) return;
+
+    // safe check for crypto.randomUUID without using "any"
+    const hasRandomUUID = typeof crypto !== 'undefined' && typeof (crypto as unknown as { randomUUID?: () => string }).randomUUID === 'function';
+    const tempId = hasRandomUUID ? (crypto as unknown as { randomUUID: () => string }).randomUUID() : `temp-${Date.now()}`;
+
+    const newConn: DBConnection = {
+      id: tempId,
+      sequence_id: '',
+      source_block_id: params.source,
+      target_block_id: params.target,
+      condition_type: 'default',
+      custom_label: undefined,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    console.log('[FlowBuilder] onConnect -> optimistic add', { source: params.source, target: params.target, tempId });
+
+    setFlowState((prev) => ({ ...prev, connections: [...prev.connections, newConn] }));
+
+    if (!isApplyingHistoryRef.current) {
+      console.log('[FlowBuilder] onConnect -> calling onCreateConnection', params.source, params.target);
+      onCreateConnection(params.source, params.target);
+    } else {
+      console.log('[FlowBuilder] onConnect -> suppressed backend sync (applying history)');
+    }
+  }, [setFlowState, onCreateConnection]);
+
+  // Edge double-click delete
+  const onEdgeDoubleClick = useCallback((event: React.MouseEvent, edge: Edge) => {
+    event.preventDefault();
+    console.log('[FlowBuilder] onEdgeDoubleClick -> deleting edge', edge.id);
+    handleDeleteConnection(edge.id);
+  }, [handleDeleteConnection]);
+
+  // ------------------ Build nodes and edges for ReactFlow ------------------
+  const nodes: Node[] = useMemo(() =>
     currentBlocks.map((block) => {
-      // Find the latest block data from the blocks prop (which has fresh API data)
-      const latestBlock = blocks.find(b => b.id === block.id) || block;
-      
+      const latestBlock = blocks.find((b) => b.id === block.id) || block;
       return {
         id: block.id,
         type: 'emailBlock',
         position: { x: block.position_x, y: block.position_y },
         data: {
           ...latestBlock,
-          // Override position from currentBlocks to ensure it's in sync with undo/redo
           position_x: block.position_x,
           position_y: block.position_y,
           onEdit: onEditBlock,
@@ -200,19 +350,13 @@ export default function FlowBuilder({
     [currentBlocks, blocks, onEditBlock, handleDeleteBlock, onDuplicateBlock]
   );
 
-  // Convert connections to React Flow edges
-  const edges: Edge[] = useMemo(() => 
+  const edges: Edge[] = useMemo(() =>
     currentConnections.map((connection) => {
       const conditionConfig = CONDITION_TYPE_CONFIG[connection.condition_type as keyof typeof CONDITION_TYPE_CONFIG];
-      
-      // Use custom label if available, otherwise fall back to condition label
-      let displayLabel = undefined;
-      if (connection.custom_label?.trim()) {
-        displayLabel = connection.custom_label.trim();
-      } else if (connection.condition_type !== 'default') {
-        displayLabel = conditionConfig?.label || connection.condition_type;
-      }
-      
+      let displayLabel: string | undefined = undefined;
+      if (connection.custom_label?.trim()) displayLabel = connection.custom_label.trim();
+      else if (connection.condition_type !== 'default') displayLabel = conditionConfig?.label || connection.condition_type;
+
       return {
         id: connection.id,
         source: connection.source_block_id,
@@ -220,84 +364,47 @@ export default function FlowBuilder({
         type: 'smoothstep',
         animated: connection.condition_type !== 'default' || !!connection.custom_label,
         style: {
-          stroke: connection.custom_label ? '#8b5cf6' : // Purple for custom labels
-                  connection.condition_type === 'default' ? '#6366f1' : 
-                  connection.condition_type.includes('not') ? '#ef4444' : '#10b981',
+          stroke: connection.custom_label ? '#8b5cf6' :
+            connection.condition_type === 'default' ? '#6366f1' :
+              connection.condition_type.includes('not') ? '#ef4444' : '#10b981',
           strokeWidth: 2,
         },
         label: displayLabel,
-        labelStyle: {
-          fontSize: 11,
-          fontWeight: 500,
-          color: connection.custom_label ? '#8b5cf6' : conditionConfig?.color || '#6b7280'
-        },
-        labelBgStyle: {
-          fill: '#ffffff',
-          fillOpacity: 0.9,
-          rx: 4,
-          ry: 4,
-        },
+        labelStyle: { fontSize: 11, fontWeight: 500, color: connection.custom_label ? '#8b5cf6' : conditionConfig?.color || '#6b7280' },
+        labelBgStyle: { fill: '#ffffff', fillOpacity: 0.9, rx: 4, ry: 4 },
       };
     }),
     [currentConnections]
   );
 
+  // --- ReactFlow controlled local state (smooth dragging) ---
   const [reactFlowNodes, setNodes, onNodesChange] = useNodesState(nodes);
   const [reactFlowEdges, setEdges, onEdgesChange] = useEdgesState(edges);
 
-  // Update nodes when blocks change
-  useMemo(() => {
+  useEffect(() => {
     setNodes(nodes);
   }, [nodes, setNodes]);
 
-  // Update edges when connections change
-  useMemo(() => {
+  useEffect(() => {
     setEdges(edges);
   }, [edges, setEdges]);
 
-  // Handle node position changes with undo/redo
-  const onNodeDragStop = useCallback((_event: React.MouseEvent, node: Node) => {
-    setFlowState((prevState) => ({
-      ...prevState,
-      blocks: prevState.blocks.map(block => 
-        block.id === node.id
-          ? { ...block, position_x: Math.round(node.position.x), position_y: Math.round(node.position.y) }
-          : block
-      ),
-    }));
-    onUpdateBlock(node.id, {
-      position_x: Math.round(node.position.x),
-      position_y: Math.round(node.position.y),
-    });
-  }, [setFlowState, onUpdateBlock]);
 
-  // Handle new connections
-  const onConnect = useCallback((params: Connection) => {
-    if (params.source && params.target) {
-      onCreateConnection(params.source, params.target);
-    }
-  }, [onCreateConnection]);
-
-  // Handle edge deletion
-  const onEdgeDoubleClick = useCallback((event: React.MouseEvent, edge: Edge) => {
-    event.preventDefault();
-    handleDeleteConnection(edge.id);
-  }, [handleDeleteConnection]);
-
-  // Generate minimap node colors
-  const getMiniMapNodeColor = (node: Node) => {
-    const block = currentBlocks.find(b => b.id === node.id);
-    if (!block) return '#gray';
+  // Minimap color helper (memoized with callback)
+  const getMiniMapNodeColor = useCallback((node: Node) => {
+    const block = currentBlocks.find((b) => b.id === node.id);
+    if (!block) return '#6b7280';
     const config = BLOCK_TYPE_CONFIG[block.type];
     return config.borderColor.includes('blue') ? '#3b82f6' :
-           config.borderColor.includes('green') ? '#10b981' :
-           config.borderColor.includes('purple') ? '#8b5cf6' :
-           config.borderColor.includes('orange') ? '#f59e0b' :
-           config.borderColor.includes('red') ? '#ef4444' :
-           config.borderColor.includes('yellow') ? '#eab308' :
-           config.borderColor.includes('pink') ? '#ec4899' : '#6b7280';
-  };
+      config.borderColor.includes('green') ? '#10b981' :
+        config.borderColor.includes('purple') ? '#8b5cf6' :
+          config.borderColor.includes('orange') ? '#f59e0b' :
+            config.borderColor.includes('red') ? '#ef4444' :
+              config.borderColor.includes('yellow') ? '#eab308' :
+                config.borderColor.includes('pink') ? '#ec4899' : '#6b7280';
+  }, [currentBlocks]);
 
+  // ------------------ Render ------------------
   return (
     <div className="flex-1 h-full bg-gray-50">
       <ReactFlow
@@ -314,14 +421,10 @@ export default function FlowBuilder({
         minZoom={0.1}
         maxZoom={2}
         defaultViewport={{ x: 0, y: 0, zoom: 0.8 }}
-        connectionLineStyle={{
-          stroke: '#6366f1',
-          strokeWidth: 2,
-        }}
+        connectionLineStyle={{ stroke: '#6366f1', strokeWidth: 2 }}
         snapToGrid
         snapGrid={[20, 20]}
       >
-        {/* Undo/Redo Controls */}
         <div className="absolute top-4 left-4 z-10">
           <UndoRedoControls
             canUndo={canUndo}
@@ -331,42 +434,21 @@ export default function FlowBuilder({
             hasUnsavedChanges={hasUnsavedChanges}
           />
         </div>
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={20}
-          size={1}
-          color="#e5e7eb"
-        />
-        
-        <Controls
-          showZoom
-          showFitView
-          showInteractive
-          position="bottom-right"
-          className="bg-white border border-gray-200 rounded-lg shadow-lg"
-        />
-        
-        <MiniMap
-          nodeColor={getMiniMapNodeColor}
-          nodeStrokeWidth={3}
-          pannable
-          zoomable
-          position="top-right"
-          className="bg-white border border-gray-200 rounded-lg shadow-lg"
-        />
+
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#e5e7eb" />
+
+        <Controls showZoom showFitView showInteractive position="bottom-right" className="bg-white border border-gray-200 rounded-lg shadow-lg" />
+
+        <MiniMap nodeColor={getMiniMapNodeColor} nodeStrokeWidth={3} pannable zoomable position="top-right" className="bg-white border border-gray-200 rounded-lg shadow-lg" />
       </ReactFlow>
 
-      {/* Instructions Overlay */}
+      {/* Instructions overlay */}
       {currentBlocks.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center p-8 bg-white rounded-2xl shadow-lg border-2 border-dashed border-gray-300 max-w-md">
             <div className="text-6xl mb-4">📧</div>
-            <h3 className="text-xl font-bold text-gray-900 mb-2">
-              Start Building Your Email Sequence
-            </h3>
-            <p className="text-gray-600 mb-4">
-              Click on email blocks in the sidebar to add them to your flow. Connect them by dragging from the bottom handle to create your sequence.
-            </p>
+            <h3 className="text-xl font-bold text-gray-900 mb-2">Start Building Your Email Sequence</h3>
+            <p className="text-gray-600 mb-4">Click on email blocks in the sidebar to add them to your flow. Connect them by dragging from the bottom handle to create your sequence.</p>
             <div className="text-sm text-gray-500 space-y-1">
               <p>💡 Tip: Double-click blocks to edit their content</p>
               <p>💡 Tip: Double-click connections to delete them</p>
