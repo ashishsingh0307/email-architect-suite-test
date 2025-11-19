@@ -8,7 +8,7 @@ export function useSequences() {
 
   const fetchSequences = useCallback(async () => {
     try {
-      const response = await fetch('/api/sequences');
+      const response = await fetch('/api/sequences', { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
         setSequences(data);
@@ -28,6 +28,7 @@ export function useSequences() {
     const response = await fetch('/api/sequences', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ name, description }),
     });
 
@@ -43,6 +44,7 @@ export function useSequences() {
   const duplicateSequence = useCallback(async (sequenceId: string) => {
     const response = await fetch(`/api/sequences/${sequenceId}/duplicate`, {
       method: 'POST',
+      credentials: 'include',
     });
 
     if (!response.ok) {
@@ -57,6 +59,7 @@ export function useSequences() {
   const deleteSequence = useCallback(async (sequenceId: string) => {
     const response = await fetch(`/api/sequences/${sequenceId}`, {
       method: 'DELETE',
+      credentials: 'include',
     });
 
     if (!response.ok) {
@@ -91,7 +94,7 @@ export function useSequenceData(sequenceId: string | null) {
 
     setLoading(true);
     try {
-      const response = await fetch(`/api/sequences/${sequenceId}`);
+      const response = await fetch(`/api/sequences/${sequenceId}`, { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
         setBlocks(data.blocks || []);
@@ -119,6 +122,7 @@ export function useSequenceData(sequenceId: string | null) {
     const response = await fetch(`/api/sequences/${sequenceId}/blocks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ sequence_id: sequenceId, type, name, position_x, position_y }),
     });
 
@@ -135,6 +139,7 @@ export function useSequenceData(sequenceId: string | null) {
     const response = await fetch(`/api/blocks/${blockId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(updates),
     });
 
@@ -150,6 +155,7 @@ export function useSequenceData(sequenceId: string | null) {
   const duplicateBlock = useCallback(async (blockId: string) => {
     const response = await fetch(`/api/blocks/${blockId}/duplicate`, {
       method: 'POST',
+      credentials: 'include',
     });
 
     if (!response.ok) {
@@ -164,6 +170,7 @@ export function useSequenceData(sequenceId: string | null) {
   const deleteBlock = useCallback(async (blockId: string) => {
     const response = await fetch(`/api/blocks/${blockId}`, {
       method: 'DELETE',
+      credentials: 'include',
     });
 
     if (!response.ok) {
@@ -187,6 +194,7 @@ export function useSequenceData(sequenceId: string | null) {
     const response = await fetch('/api/connections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({
         sequence_id: sequenceId,
         source_block_id: sourceId,
@@ -208,6 +216,7 @@ export function useSequenceData(sequenceId: string | null) {
   const deleteConnection = useCallback(async (connectionId: string) => {
     const response = await fetch(`/api/connections/${connectionId}`, {
       method: 'DELETE',
+      credentials: 'include',
     });
 
     if (!response.ok) {

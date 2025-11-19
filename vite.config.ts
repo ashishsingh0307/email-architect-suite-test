@@ -1,21 +1,40 @@
 import path from "path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { cloudflare } from "@cloudflare/vite-plugin";
 import { mochaPlugins } from "@getmocha/vite-plugins";
 
 export default defineConfig({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  plugins: [...mochaPlugins(process.env as any), react(), cloudflare()],
+  plugins: [...mochaPlugins(process.env), react()],
+
   server: {
     allowedHosts: true,
+    proxy: {
+      "/api": {
+        target: "http://localhost:8787",
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyReq, req) => {
+            // Forward cookies
+            const cookie = req.headers["cookie"];
+            if (cookie) proxyReq.setHeader("cookie", cookie);
+
+            // Forward Authorization header (THIS FIXES YOUR ISSUE)
+            const auth = req.headers["authorization"];
+            if (auth) proxyReq.setHeader("authorization", auth);
+          });
+        },
+      },
+    },
   },
-  build: {
-    chunkSizeWarningLimit: 5000,
-  },
+
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
+  },
+
+  build: {
+    chunkSizeWarningLimit: 5000,
   },
 });

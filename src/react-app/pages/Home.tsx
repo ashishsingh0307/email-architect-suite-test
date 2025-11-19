@@ -19,6 +19,8 @@ import { useSequences, useSequenceData } from '@/react-app/hooks/useApi';
 import { EmailBlock, EmailBlockTypeT, BLOCK_TYPE_CONFIG } from '@/shared/types';
 import { EMAIL_TEMPLATES } from '@/react-app/data/emailTemplates';
 
+import LoginRegisterForm from '@/react-app/components/LoginRegisterForm';
+
 export default function HomePage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -364,44 +366,33 @@ export default function HomePage() {
     };
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <Plus className="w-8 h-8 text-white" />
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-lg p-6">
+          <div className="flex flex-col items-center gap-4 mb-4">
+            <div className="w-14 h-14 bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl flex items-center justify-center">
+              <Plus className="w-6 h-6 text-white" />
             </div>
-            <h1 className="text-2xl font-bold text-gray-900 mb-2">
-              Email Architect Suite
-            </h1>
-            <p className="text-gray-600">
-              Build powerful email sequences with visual flow builder and AI content generation
-            </p>
-          </div>
-
-          <div className="space-y-4">
-            <button
-              onClick={handleDevLogin}
-              className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white py-3 px-4 rounded-lg hover:from-blue-700 hover:to-purple-700 transition-all duration-200 font-medium"
-            >
-              Sign in with Google
-            </button>
-
-            <div className="text-center">
-              <button
-                onClick={() => navigate('/dashboard')}
-                className="text-blue-600 hover:text-blue-700 text-sm font-medium"
-              >
-                View Dashboard
-              </button>
+            <div>
+              <h2 className="text-xl font-bold text-start">Email Architect Suite</h2>
+              <p className="text-sm text-gray-600 text-start">Build email sequences with a visual flow builder and AI content tools</p>
             </div>
           </div>
 
-          <div className="mt-8 pt-6 border-t border-gray-100">
-            <div className="text-sm text-gray-500 space-y-2">
+          <div className="border-t pt-4">
+            <div className="text-sm text-gray-500 mb-3">
               <p>✨ AI-powered email content generation</p>
               <p>🎯 Visual drag-and-drop flow builder</p>
               <p>📊 Export to major email platforms</p>
               <p>🔄 Advanced branching logic</p>
             </div>
+
+            <LoginRegisterForm
+              showGoogle={true}
+              onGoogleSignIn={handleDevLogin}
+              onSuccess={() => window.location.reload()}
+              noWrapper
+            />
+
+            
           </div>
         </div>
       </div>
@@ -470,8 +461,8 @@ export default function HomePage() {
                 <button
                   onClick={() => setViewMode('flow')}
                   className={`px-3 py-1 text-sm rounded transition-colors ${viewMode === 'flow'
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
                     }`}
                 >
                   <GitBranch className="w-4 h-4 inline-block mr-1" />
@@ -480,8 +471,8 @@ export default function HomePage() {
                 <button
                   onClick={() => setViewMode('timeline')}
                   className={`px-3 py-1 text-sm rounded transition-colors ${viewMode === 'timeline'
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
                     }`}
                 >
                   <Clock className="w-4 h-4 inline-block mr-1" />

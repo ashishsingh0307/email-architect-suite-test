@@ -62,6 +62,7 @@ export default function FlowBuilder({
     canRedo,
     reset,
     hasUnsavedChanges,
+    markAsSaved,
   } = useUndoRedo<FlowState>({
     blocks: blocks || [],
     connections: connections || [],
@@ -159,10 +160,16 @@ export default function FlowBuilder({
       console.log('[FlowBuilder] parent -> replacePresent (server truth)', { blocksChanged, connectionsChanged, blockContentChanged });
       const replaceFn = typeof replacePresent === 'function' ? replacePresent : setFlowState;
       replaceFn({ blocks: blocks || [], connections: connections || [] });
+      // Parent is authoritative now — clear "unsaved" marker
+      try {
+        if (typeof markAsSaved === 'function') markAsSaved();
+      } catch (e) {
+        /* ignore */
+      }
       prevBlockCountRef.current = currentBlockCount;
       prevConnectionCountRef.current = currentConnectionCount;
     }
-  }, [blocks, connections, reset, setFlowState, flowState.blocks]);
+  }, [blocks, connections, reset, setFlowState, flowState.blocks, flowState.connections, replacePresent, markAsSaved]);
 
 
   // Derived arrays for rendering (memoized)
