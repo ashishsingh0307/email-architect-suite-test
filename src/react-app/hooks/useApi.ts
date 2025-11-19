@@ -144,7 +144,18 @@ export function useSequenceData(sequenceId: string | null) {
     });
 
     if (!response.ok) {
-      throw new Error('Failed to update block');
+      let msg = 'Failed to update block';
+      try {
+        const err = await response.json();
+        msg = err.error || JSON.stringify(err);
+      } catch (e) {
+        try {
+          const txt = await response.text();
+          if (txt) msg = txt;
+        } catch (e2) {}
+      }
+      console.error('[useApi] updateBlock failed:', msg, { blockId, updates });
+      throw new Error(msg);
     }
 
     const updatedBlock = await response.json();

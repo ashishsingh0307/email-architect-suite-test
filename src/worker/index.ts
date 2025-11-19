@@ -239,6 +239,7 @@ async function ensureSequenceTables(DB: D1Database) {
       send_delay_hours INTEGER DEFAULT 0,
       position_x INTEGER DEFAULT 0,
       position_y INTEGER DEFAULT 0,
+      notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`).run();
@@ -260,6 +261,12 @@ async function ensureSequenceTables(DB: D1Database) {
   // Ensure legacy tables get a custom_label column if missing
   try {
     await DB.prepare(`ALTER TABLE sequence_connections ADD COLUMN custom_label TEXT`).run();
+  } catch (e) {
+    // ignore if column already exists or ALTER not supported
+  }
+  // Ensure email_blocks has a notes column on older DBs
+  try {
+    await DB.prepare(`ALTER TABLE email_blocks ADD COLUMN notes TEXT`).run();
   } catch (e) {
     // ignore if column already exists or ALTER not supported
   }
@@ -1082,56 +1089,69 @@ app.put(
   maybeDevAuth,
   zValidator("json", UpdateEmailBlockSchema),
   async (c) => {
-    const db = c.env.DB;
-    const user = c.get("user");
-    const blockId = c.req.param("id");
-    const body = c.req.valid("json");
-    const now = new Date().toISOString();
+    try {
+      const db = c.env.DB;
+      const user = c.get("user");
+      const blockId = c.req.param("id");
+      const body = c.req.valid("json");
+      const now = new Date().toISOString();
 
-    if (!user) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
+      if (!user) {
+        return c.json({ error: "Unauthorized" }, 401);
+      }
 
-    // Verify block ownership through sequence
-    const block = await db
-      .prepare(
-        `
+      // Verify block ownership through sequence
+      const block = await db
+        .prepare(
+          `
     SELECT eb.* FROM email_blocks eb
     JOIN sequences s ON eb.sequence_id = s.id
     WHERE eb.id = ? AND s.user_id = ?
   `
-      )
-      .bind(blockId, user.id)
-      .first();
+        )
+        .bind(blockId, user.id)
+        .first();
 
-    if (!block) {
-      return c.json({ error: "Block not found" }, 404);
-    }
+      if (!block) {
+        return c.json({ error: "Block not found" }, 404);
+      }
 
-    const updates = Object.entries(body).filter(
-      ([_, value]) => value !== undefined
-    );
-    if (updates.length === 0) {
-      return c.json({ error: "No fields to update" }, 400);
-    }
+      // Only allow updating fields that are in the UpdateEmailBlockSchema
+      const allowedKeys = [
+        'name', 'subject_line', 'preview_text', 'body_copy', 'cta_text', 'cta_url',
+        'send_delay_hours', 'position_x', 'position_y', 'notes'
+      ];
 
-    const setClause = updates.map(([key, _]) => `${key} = ?`).join(", ");
-    const values = [...updates.map(([_, value]) => value), now, blockId];
+      const updates = Object.entries(body).filter(
+        ([key, value]) => value !== undefined && allowedKeys.includes(key)
+      );
+      if (updates.length === 0) {
+        return c.json({ error: "No fields to update" }, 400);
+      }
 
-    await db
-      .prepare(
-        `
+      const setClause = updates.map(([key, _]) => `${key} = ?`).join(", ");
+      const values = [...updates.map(([_, value]) => value), now, blockId];
+
+      await db
+        .prepare(
+          `
     UPDATE email_blocks SET ${setClause}, updated_at = ? WHERE id = ?
   `
-      )
-      .bind(...values)
-      .run();
+        )
+        .bind(...values)
+        .run();
 
-    const updatedBlock = await db
-      .prepare("SELECT * FROM email_blocks WHERE id = ?")
-      .bind(blockId)
-      .first();
-    return c.json(updatedBlock);
+      const updatedBlock = await db
+        .prepare("SELECT * FROM email_blocks WHERE id = ?")
+        .bind(blockId)
+        .first();
+      return c.json(updatedBlock);
+    } catch (err: any) {
+      console.error('[worker] Update block failed:', err && err.message ? err.message : err);
+      // Return helpful debug information in development
+      const detail = process.env.NODE_ENV === 'development' ? (err && err.stack ? err.stack : String(err)) : undefined;
+      return c.json({ error: 'Internal Server Error', detail }, 500);
+    }
   }
 );
 

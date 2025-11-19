@@ -121,19 +121,17 @@ export default function BlockSidebar({ onAddBlock, isCollapsed, onToggle, select
                   </div>
                 </button>
                 
-                {/* AI Generate Button */}
+                {/* Decorative separator */}
                 {!isCollapsed && (
-                  <button
-                    onClick={() => onAddBlock(type as EmailBlockTypeT, true)}
-                    className={`w-full p-2 text-left rounded-lg border-2 ${config.borderColor} ${config.bgColor} hover:opacity-80 transition-all group`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Wand2 className={`w-4 h-4 ${config.color}`} />
-                      <span className={`text-sm font-medium ${config.color}`}>
-                        Generate {config.label} with AI
-                      </span>
+                  <div className="my-4 flex items-center" aria-hidden>
+                    <div className="flex-1 h-px bg-gray-200" />
+                    <div className="mx-3 flex items-center justify-center w-8 h-8 rounded-full bg-white ring-1 ring-gray-100 shadow-sm">
+                      <div className="w-6 h-6 bg-gradient-to-br from-purple-200 to-blue-200 rounded-full flex items-center justify-center">
+                        <Wand2 className="w-4 h-4 text-purple-600" />
+                      </div>
                     </div>
-                  </button>
+                    <div className="flex-1 h-px bg-gray-200" />
+                  </div>
                 )}
               </div>
             ))}

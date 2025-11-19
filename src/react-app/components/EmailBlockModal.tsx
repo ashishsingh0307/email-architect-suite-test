@@ -8,6 +8,7 @@ interface EmailBlockModalProps {
   block: EmailBlock | null;
   onClose: () => void;
   onSave: (blockId: string, updates: Partial<EmailBlock>) => void;
+  onOpenAI?: (applyContent: (content: any) => void) => void;
 }
 
 interface FormData {
@@ -23,7 +24,7 @@ interface FormData {
   notes: string;
 }
 
-export default function EmailBlockModal({ block, onClose, onSave }: EmailBlockModalProps) {
+export default function EmailBlockModal({ block, onClose, onSave, onOpenAI }: EmailBlockModalProps) {
   const [activeTab, setActiveTab] = useState<'content' | 'scheduling' | 'preview'>('content');
   const [isRewriting, setIsRewriting] = useState(false);
   const [scheduleType, setScheduleType] = useState<'immediate' | 'delay' | 'specific'>('delay');
@@ -291,6 +292,33 @@ export default function EmailBlockModal({ block, onClose, onSave }: EmailBlockMo
                         className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         placeholder="Preview text that appears in inbox"
                       />
+
+                      {/* Larger, more visible Generate with AI button under preview text */}
+                      {typeof onOpenAI === 'function' && (
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onOpenAI((content: any) => {
+                                try {
+                                  if (!content) return;
+                                  setValue('subject_line', content.subject_line || '');
+                                  setValue('preview_text', content.preview_text || '');
+                                  setValue('body_copy', content.body_copy || content.html || '');
+                                  setValue('cta_text', content.cta_text || '');
+                                  setValue('cta_url', content.cta_url || '');
+                                } catch (e) {
+                                  console.error('Failed to apply AI content to form', e);
+                                  alert('Failed to apply AI content to this block.');
+                                }
+                              });
+                            }}
+                            className="w-full px-4 py-3 bg-purple-600 text-white rounded-lg shadow hover:bg-purple-700 transition-colors"
+                          >
+                            <span className="font-medium">Generate Content with AI</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -300,7 +328,7 @@ export default function EmailBlockModal({ block, onClose, onSave }: EmailBlockMo
                     <label className="block text-sm font-medium text-gray-700">
                       Email Body
                     </label>
-                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2">
                       <span className="text-xs text-gray-500">AI Rewrite:</span>
                       <button
                         type="button"
@@ -345,6 +373,7 @@ export default function EmailBlockModal({ block, onClose, onSave }: EmailBlockMo
                       {isRewriting && (
                         <RefreshCw className="w-3 h-3 text-purple-600 animate-spin" />
                       )}
+                      
                     </div>
                   </div>
                   <RichTextEditor
