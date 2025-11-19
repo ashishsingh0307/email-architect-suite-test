@@ -32,6 +32,7 @@ export default function HomePage() {
   const [showExportModal, setShowExportModal] = useState(false);
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiBlockType, setAIBlockType] = useState<EmailBlockTypeT | null>(null);
+  const [aiOnGenerate, setAIOnGenerate] = useState<((content: any) => void) | null>(null);
   const [showConnectionModal, setShowConnectionModal] = useState(false);
   const [connectionData, setConnectionData] = useState<{
     sourceId: string;
@@ -137,10 +138,13 @@ export default function HomePage() {
   const handleUpdateBlock = useCallback(async (blockId: string, updates: Partial<EmailBlock>) => {
     try {
       setIsSaving(true);
+      console.log('[Home] updating block', blockId, updates);
       await updateBlock(blockId, updates);
+      console.log('[Home] updateBlock succeeded', blockId);
     } catch (error) {
       console.error('Failed to update block:', error);
-      alert('Failed to update email block. Please try again.');
+      const msg = error instanceof Error ? error.message : String(error);
+      alert(`Failed to update email block: ${msg}`);
     } finally {
       setIsSaving(false);
     }
@@ -592,6 +596,13 @@ export default function HomePage() {
           block={editingBlock}
           onClose={() => setEditingBlock(null)}
           onSave={handleUpdateBlock}
+          onOpenAI={(applyFn) => {
+            if (!editingBlock) return;
+            // store temporary apply callback and open AI modal
+            setAIOnGenerate(() => applyFn);
+            setAIBlockType(editingBlock.type as any);
+            setShowAIModal(true);
+          }}
         />
       )}
 
@@ -602,8 +613,26 @@ export default function HomePage() {
           onClose={() => {
             setShowAIModal(false);
             setAIBlockType(null);
+            setAIOnGenerate(null);
           }}
-          onGenerate={handleAIGenerate}
+          onGenerate={async (content: any) => {
+            // if a temporary apply handler exists (opened from editor), use it to apply content to the form
+            if (aiOnGenerate) {
+              try {
+                aiOnGenerate(content);
+              } catch (e) {
+                console.error('AI onGenerate apply failed:', e);
+                alert('Failed to apply AI content to the editor.');
+              }
+              setAIOnGenerate(null);
+              setShowAIModal(false);
+              setAIBlockType(null);
+              return;
+            }
+
+            // default behavior (create a new AI block)
+            await handleAIGenerate(content);
+          }}
         />
       )}
 
